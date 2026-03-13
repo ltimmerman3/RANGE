@@ -201,9 +201,10 @@ class energy_computation:
     This contains the functionalities of computing the energy of a molecular structure
     It needs the template of the cluster (generated from generate_bounds), just to know what we are modeling.
     """
-    def __init__(self, templates, go_conversion_rule, 
-                 calculator=None, calculator_type='structural', geo_opt_para=None, 
+    def __init__(self, templates, go_conversion_rule,
+                 calculator=None, calculator_type='structural', geo_opt_para=None,
                  if_coarse_calc=False, coarse_calc_para=None,
+                 if_hybrid_calc=False, hybrid_calc_para=None,
                  save_output_level = 'Simple',
                  check_structure_sanity = None,
                  ):
@@ -237,6 +238,24 @@ class energy_computation:
                                                          sigma  = self.coarse_calc_sig,
                                                          #cutoff = self.coarse_calc_cutoff,
                                                          )
+        self.if_hybrid_calc = if_hybrid_calc
+        if self.if_hybrid_calc:
+            try:
+                self.hybrid_ml_calculator = hybrid_calc_para['ml_calculator']
+                self.hybrid_ml_fmax = hybrid_calc_para['ml_fmax']
+                self.hybrid_ml_steps = hybrid_calc_para['ml_steps']
+                self.hybrid_ml_constraint = hybrid_calc_para.get('ml_constraint', None)
+                self.hybrid_dft_calculator = hybrid_calc_para['dft_calculator']
+                self.hybrid_dft_constraint = hybrid_calc_para.get('dft_constraint', None)
+            except:
+                raise ValueError('Hybrid ML/DFT parameter is missing or incorrect')
+            cell = np.array(self.templates[0].get_cell())
+            if np.allclose(cell, 0):
+                raise ValueError(
+                    'Hybrid ML/DFT mode requires a valid unit cell. '
+                    'Set pbc_box in cluster_model to define the simulation cell.'
+                )
+
         # For cell size and PBC condition:
         self.Global_cell_size = self.templates[0].get_cell() # e.g., (0,0,0) or (10,20,0) or (10,10,10) etc.
         self.Global_cell_condition = self.templates[0].get_pbc() # e.g., (True, True, False) for Dirichlet-BC, All True for PBC
@@ -481,7 +500,7 @@ class energy_computation:
             new_cumpute_directory = os.path.join(save_output_directory,computing_id)
             os.makedirs( new_cumpute_directory, exist_ok=True)   
             # Log the starting structure
-            write( os.path.join(new_cumpute_directory, 'start.xyz'), atoms, format='xyz' )
+            write( os.path.join(new_cumpute_directory, 'start.xyz'), atoms, format='extxyz' )
         
         # if use coarse calc to pre-relax
         if self.if_coarse_calc:
@@ -505,18 +524,57 @@ class energy_computation:
             if self.save_output_level == 'Simple' and self.calculator_type == 'ase':
                 pass
             elif self.calculator_type != 'structural':
-                write( os.path.join(new_cumpute_directory, 'coarse_final.xyz'), atoms, format='xyz') 
+                write( os.path.join(new_cumpute_directory, 'coarse_final.xyz'), atoms, format='extxyz') 
             vec = self.cluster_to_vector( atoms, vec ) # update vec after coarse opt
                           
         # The fine optimization
         start_time = time.time()
-        if self.calculator_type == 'ase':   # To use ASE calculator
+        if self.calculator_type == 'ase' and self.if_hybrid_calc:
+            # Hybrid ML/DFT pipeline: ML relaxation followed by DFT singlepoint
+            # Stage 1: ML relaxation
+            atoms.calc = self.hybrid_ml_calculator
+            atoms.set_constraint()  # Clear any constraints from coarse stage
+            if self.hybrid_ml_constraint is not None:
+                atoms.set_constraint( self.hybrid_ml_constraint )
+            if self.save_output_level == 'Full':
+                dyn_log = os.path.join(new_cumpute_directory, 'ml-opt.log')
+                dyn = BFGS(atoms, logfile=dyn_log)
+            elif self.save_output_level == 'Simple':
+                dyn = BFGS(atoms, logfile=None)
+            else:
+                raise ValueError('Saving output level keyword is not supported')
+            ml_success = False
+            try:
+                dyn.run( fmax=self.hybrid_ml_fmax, steps=self.hybrid_ml_steps )
+                vec = self.cluster_to_vector( atoms, vec )  # Update vec after ML opt
+                ml_success = True
+                if self.save_output_level == 'Full':
+                    write( os.path.join(new_cumpute_directory, 'ml_final.xyz'), atoms, format='extxyz')
+            except:
+                print(computing_id, 'Hybrid ML relaxation failed.')
+                energy = 5555555
+
+            # Stage 2: DFT singlepoint (only if ML succeeded)
+            if ml_success:
+                atoms.set_constraint()  # Remove ML constraints
+                atoms.calc = self.hybrid_dft_calculator
+                if self.hybrid_dft_constraint is not None:
+                    atoms.set_constraint( self.hybrid_dft_constraint )
+                try:
+                    energy = atoms.get_potential_energy()
+                    if self.save_output_level == 'Full':
+                        write( os.path.join(new_cumpute_directory, 'dft_singlepoint.xyz'), atoms, format='extxyz')
+                except:
+                    print(computing_id, 'Hybrid DFT singlepoint failed.')
+                    energy = 6666666
+
+        elif self.calculator_type == 'ase':   # To use ASE calculator
             atoms.calc = self.calculator
             # If anything happens (e.g. SCF not converged due to bad structure), return a fake high energy
             if self.geo_opt_para is not None:
                 if self.save_output_level == 'Full':
-                    dyn_log = os.path.join(new_cumpute_directory, 'opt.log') 
-                    dyn = BFGS(atoms, logfile=dyn_log ) 
+                    dyn_log = os.path.join(new_cumpute_directory, 'opt.log')
+                    dyn = BFGS(atoms, logfile=dyn_log )
                 elif self.save_output_level == 'Simple':
                     dyn = BFGS(atoms, logfile=None)
                 else:
@@ -532,10 +590,10 @@ class energy_computation:
                 dual_opt = None
                 if 'ase_constraint' in self.geo_opt_para:
                     atoms.set_constraint( self.geo_opt_para['ase_constraint'] )
-                    if 'Dual_stage_optimization' in self.geo_opt_para: 
+                    if 'Dual_stage_optimization' in self.geo_opt_para:
                         dual_opt = self.geo_opt_para['Dual_stage_optimization']
 
-                try:                    
+                try:
                     dyn.run( fmax=fmax, steps=steps )
                     if dual_opt is not None:
                         atoms.set_constraint()  # Remove constraints
@@ -574,7 +632,7 @@ class energy_computation:
         # Vec, structure and energy are all finalized now. They will be saved in db file.
         if self.save_output_level == 'Full':
             np.savetxt(os.path.join(new_cumpute_directory, 'vec.txt'), vec, delimiter=',')  
-            write( os.path.join(new_cumpute_directory, 'final.xyz'), atoms )
+            write( os.path.join(new_cumpute_directory, 'final.xyz'), atoms, format='extxyz' )
             np.savetxt(os.path.join(new_cumpute_directory, 'energy.txt'), [energy], delimiter=',')
             
         current_time = np.round(time.time() - start_time , 3)

@@ -144,11 +144,11 @@ def get_CP2K_run_info(CP2K_input_script_file, initial_xyz):
     return atoms
 
 def convert_xyz_to_lmps(input_xyz, output_lammps):
-    atoms = read(input_xyz)
+    atoms = read(input_xyz, format='extxyz')
     write(output_lammps,atoms, atom_style='charge')
     
 def convert_xyz_to_gro(input_xyz, output_gro):
-    atoms = read(input_xyz)
+    atoms = read(input_xyz, format='extxyz')
     write(output_gro,atoms)
 
 

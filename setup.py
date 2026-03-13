@@ -19,8 +19,8 @@ setup(
     packages=find_packages(),
     python_requires=">=3.7",
     install_requires=[
-        # "numpy>=1.20",
-        # "scipy>=1.5",
+        "numpy>=1.20",
+        "scipy>=1.5",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

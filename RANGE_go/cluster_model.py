@@ -7,6 +7,7 @@ Created on Wed Jun  4 08:56:08 2025
 from RANGE_go.utility import correct_surface_normal
 
 import numpy as np
+import warnings
 
 from ase.io import read
 from ase import Atoms
@@ -353,12 +354,27 @@ class cluster_model:
         self.templates = go_templates
         self.boundary = go_boundary
         self.conversion_rule = go_conversion_rule
-        
+
+        # Warn if constraint bounds exceed periodic cell
+        if self.pbc_box is not None:
+            cell = np.array(self.pbc_box)
+            for n in range(len(self.molecules)):
+                if self.constraint_type[n] == 'in_box':
+                    cv = self.constraint_value[n]
+                    lo = np.array(cv[:3])
+                    hi = np.array(cv[3:6])
+                    if np.any(hi > cell) or np.any(lo < 0):
+                        warnings.warn(
+                            f"Constraint 'in_box' for molecule {n} extends beyond pbc_box. "
+                            f"Box: {lo}-{hi}, Cell: {cell}. "
+                            f"Atoms may be placed outside the periodic cell."
+                        )
+
         # Save the whole system in one atoms obj for furtuer use
         self.system_atoms = Atoms()
         for at in go_templates:
             self.system_atoms += at
-    
+
         return go_templates, np.array(go_boundary), go_conversion_rule
     
     # Get bonds in the input system (to be used for bond constrains if needed)
