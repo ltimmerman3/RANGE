@@ -228,7 +228,7 @@ class energy_computation:
                 self.coarse_calc_chg = coarse_calc_para['coarse_calc_chg']
                 self.coarse_calc_step = coarse_calc_para['coarse_calc_step']
                 self.coarse_calc_fmax = coarse_calc_para['coarse_calc_fmax']
-                self.coarse_calc_constraint = coarse_calc_para['coarse_calc_constraint']
+                self.coarse_calc_constraint = coarse_calc_para.get('coarse_calc_constraint', None)
                 #self.coarse_calc_cutoff = coarse_calc_para['coarse_calc_cutoff']
             except:
                 raise ValueError('Coarse optimization parameter is missing or incorrect')
@@ -556,12 +556,14 @@ class energy_computation:
 
             # Stage 2: DFT singlepoint (only if ML succeeded)
             if ml_success:
-                atoms.set_constraint()  # Remove ML constraints
-                atoms.calc = self.hybrid_dft_calculator
+                local_atoms = atoms.copy()
+                local_atoms.set_constraint()  # Remove ML constraints
+                local_atoms.calc = self.hybrid_dft_calculator
+                local_atoms.center()
                 if self.hybrid_dft_constraint is not None:
-                    atoms.set_constraint( self.hybrid_dft_constraint )
+                    local_atoms.set_constraint( self.hybrid_dft_constraint )
                 try:
-                    energy = atoms.get_potential_energy()
+                    energy = local_atoms.get_potential_energy()
                     if self.save_output_level == 'Full':
                         write( os.path.join(new_cumpute_directory, 'dft_singlepoint.xyz'), atoms, format='extxyz')
                 except:

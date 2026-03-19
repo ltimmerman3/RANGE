@@ -21,50 +21,54 @@ from mace.calculators import mace_mp
 print("Step 0: Preparation and user input")
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-xyz_path = '../xyz_structures/'
-substrate = os.path.join(xyz_path, 'BaTiO3-cub-7layer-TiO.xyz')
-adsorb = os.path.join(xyz_path, 'Cu.xyz')
-
-input_molecules = [substrate, adsorb]
-input_num_of_molecules = [1, 12]
-
-input_constraint_type = ['at_position', 'in_box']
-input_constraint_value = [(0,0,0,0,0,0), (-2.5,-2.5,7.5, 2.5,2.5,12.5)]
+# Provide user input
+Pt = 'Pt.xyz'
+input_molecules = [Pt]
+# input_num_of_molecules = [13]
+input_num_of_molecules = [4]
+input_constraint_type = ['in_box']
+input_constraint_value = [(0,0,0,5,5,5) ]
 
 
 print("Step 1: Setting cluster")
 cluster = cluster_model(input_molecules, input_num_of_molecules,
                         input_constraint_type, input_constraint_value,
-                        pbc_box=(20.26028, 20.26028, 32.13928),
+                        pbc_box=(15., 15., 15.), pbc_applied=(False, False, False)
                         )
 cluster_template, cluster_boundary, cluster_conversion_rule = cluster.generate_bounds()
-
 
 print("Step 2: Setting calculators")
 
 # ML calculator for geometry relaxation
 ml_calculator = mace_mp(model='medium', dispersion=True, default_dtype="float64", device='cpu')
 
-# DFT calculator for singlepoint energy (EMT used here as a placeholder)
-# Replace with your actual DFT calculator, e.g.:
-#   from sparc.calculator import SPARC
-#   dft_calculator = SPARC(...)
-dft_calculator = EMT()
+# DFT calculator for singlepoint energy
+from sparc.calculator import SPARC
 
-# Constraint: fix substrate atoms during optimization
-ase_constraint = FixAtoms(indices=[at.index for at in cluster.system_atoms if at.symbol != 'Cu'])
+calc_params = {
+    "EXCHANGE_CORRELATION": "GGA_PBE",
+    "KPOINT_GRID": [1, 1, 1],
+    "MESH_SPACING": 0.35,
+    "TOL_SCF": 0.0001,
+    "MAXIT_SCF": 40,
+    "CALC_STRESS": 0,
+    "PRINT_RESTART_FQ": 10,
+    "PRINT_ATOMS": 1,
+    "PRINT_FORCES": 1,
+    "SPIN_TYP": 1,
+}
+
+dft_calculator = SPARC(use_socket=True, **calc_params)
 
 # Coarse (UFF) parameters
 coarse_opt_parameter = dict(coarse_calc_eps='UFF', coarse_calc_sig='UFF', coarse_calc_chg=0,
-                            coarse_calc_step=20, coarse_calc_fmax=10,
-                            coarse_calc_constraint=ase_constraint)
+                            coarse_calc_step=20, coarse_calc_fmax=10, coarse_calc_constraint=None)
 
 # Hybrid ML/DFT parameters
 hybrid_calc_para = dict(
     ml_calculator=ml_calculator,
     ml_fmax=0.05,
     ml_steps=200,
-    ml_constraint=ase_constraint,
     dft_calculator=dft_calculator,
     # dft_constraint=None,  # optional: constraint for DFT singlepoint
 )
@@ -77,21 +81,27 @@ computation = energy_computation(
     coarse_calc_para=coarse_opt_parameter,
     if_hybrid_calc=True,
     hybrid_calc_para=hybrid_calc_para,
-    save_output_level='Simple',
+    save_output_level='Full',
 )
 
 
 print("Step 3: Run")
 output_folder_name = 'results'
 optimization = GA_ABC(computation.obj_func_compute_energy, cluster_boundary,
-                      colony_size=40, limit=40, max_iteration=5000,
+                      colony_size=40, limit=40, max_iteration=5,
                       ga_interval=1, ga_parents=20, mutate_rate=0.5, mutat_sigma=0.05,
                       output_directory=output_folder_name,
-                      restart_from_pool='structure_pool.db',
+                      # restart_from_pool='structure_pool.db',
                       apply_algorithm='ABC_GA',
                       if_clip_candidate=True,
-                      early_stop_parameter={'Max_candidate': 6000},
+                      early_stop_parameter={'Max_candidate': 500},
                       )
 optimization.run(print_interval=1)
 
-print("Step 4: See results: use analysis script")
+print("Step 4: Done. Check results_emt_hybrid/ for output files.")
+print("  In Full mode, each job folder contains:")
+print("    start.xyz          - initial structure (extxyz with cell info)")
+print("    coarse_final.xyz   - after UFF pre-relaxation")
+print("    ml_final.xyz       - after ML geometry optimization")
+print("    dft_singlepoint.xyz - structure with DFT energy")
+print("    final.xyz          - final structure saved to database")
